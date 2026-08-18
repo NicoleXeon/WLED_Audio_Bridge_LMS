@@ -1,0 +1,9 @@
+services:
+  wled-audio-bridge:
+    build: .
+    container_name: wled-audio-bridge
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./bridge.py:/app/bridge.py:ro
+    command: sh -c "squeezelite -s 127.0.0.1 -n WLED-Audio-Sync -m 02:00:00:11:98:88 -o - -r 44100 -d all=info | python3 bridge.py"
