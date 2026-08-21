@@ -17,10 +17,15 @@ FRAME_BYTES = CHUNK_SIZE * 4
 MAX_SILENT_FRAMES = 43  # ~1 second of silence at 43.06 FPS
 
 # DSP tuning environment overrides
-FREQ_MIN = float(os.environ.get("FREQ_MIN", "150.0"))
-FREQ_MAX = float(os.environ.get("FREQ_MAX", "6000.0"))
-GAIN_MULT = float(os.environ.get("GAIN_MULT", "3500.0"))
+FREQ_MIN = float(os.environ.get("FREQ_MIN", "40.0"))       # Catch deep sub-bass and 50Hz kicks
+FREQ_MAX = float(os.environ.get("FREQ_MAX", "12000.0"))    # Capture crisp cymbals and high transients
 SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.5"))
+
+# Dynamic AGC and Frequency Tilt overrides
+GAIN_MIN = float(os.environ.get("GAIN_MIN", "800.0"))       # Floor: prevents squashing heavily mastered EDM
+GAIN_MAX = float(os.environ.get("GAIN_MAX", "8500.0"))      # Ceiling: prevents boosting background tape hiss
+TILT_EXPONENT = float(os.environ.get("TILT_EXPONENT", "0.42")) # Logarithmic treble compensation curve
+DECAY_RATE = float(os.environ.get("DECAY_RATE", "0.998"))   # ~10-second slow recovery decay per frame
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
@@ -43,25 +48,37 @@ for i in range(16):
         idx = [closest]
     bins_idx.append(idx)
 
+# Pre-compute logarithmic treble tilt weights (1/f pink noise balance)
+band_centers = np.sqrt(FREQ_EDGES[:-1] * FREQ_EDGES[1:])
+TILT_WEIGHTS = ((band_centers / FREQ_MIN) ** TILT_EXPONENT).astype(np.float32)
+
+# State variables
 sample_smth = 0.0
 silence_frames = 0
+running_peak = 0.05  # Initial baseline ceiling
 STRUCT_FMT_V2 = "<6s2xffB3x16sd"
 
 start_time = None
 frames_processed = 0
 
 while True:
+    t0 = time.perf_counter()
     raw_data = sys.stdin.buffer.read(FRAME_BYTES)
+    read_duration = time.perf_counter() - t0
+
     if not raw_data or len(raw_data) < FRAME_BYTES:
         break
 
-    now = time.perf_counter()
-    
-    # Start the master hardware clock the exact millisecond the first audio byte arrives
-    if start_time is None:
-        start_time = now
+    # Gap Detector: If the pipe sat empty for >200ms, reset the clock & AGC baseline
+    if read_duration > 0.2:
+        start_time = time.perf_counter()
+        frames_processed = 0
+        running_peak = 0.05
 
-    # Do the DSP math
+    if start_time is None:
+        start_time = time.perf_counter()
+
+    # Audio ingestion and magnitude extraction
     audio = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
     left = audio[0::2]
     right = audio[1::2]
@@ -80,10 +97,27 @@ while True:
         windowed = mono * HANNING_WINDOW
         fft_vals = np.abs(np.fft.rfft(windowed)) * (2.0 / CHUNK_SIZE)
 
-        fft_result = bytearray(16)
+        # Vectorized band extraction
+        raw_energies = np.empty(16, dtype=np.float32)
         for i in range(16):
-            energy = float(np.mean(fft_vals[bins_idx[i]])) * GAIN_MULT
-            fft_result[i] = min(255, int(np.clip(energy, 0, 255)))
+            raw_energies[i] = np.mean(fft_vals[bins_idx[i]])
+
+        # Apply logarithmic pink noise compensation
+        tilted_energies = raw_energies * TILT_WEIGHTS
+
+        # Asymmetric AGC: Instant attack, slow crawl decay
+        current_max = float(np.max(tilted_energies))
+        if current_max > running_peak:
+            running_peak = current_max
+        else:
+            running_peak = max(0.005, running_peak * DECAY_RATE)
+
+        # Dynamic gain bounded within strict sanity limits
+        dynamic_gain = np.clip(255.0 / running_peak, GAIN_MIN, GAIN_MAX)
+
+        # Scale into 8-bit unsigned integer array
+        scaled = np.clip(tilted_energies * dynamic_gain, 0, 255).astype(np.uint8)
+        fft_result = bytes(scaled)
 
         payload = struct.pack(
             STRUCT_FMT_V2,
@@ -91,7 +125,7 @@ while True:
             float(raw_mag),
             float(sample_smth),
             sample_peak,
-            bytes(fft_result),
+            fft_result,
             float(raw_mag)
         )
 
@@ -100,15 +134,13 @@ while True:
         except Exception:
             pass
 
-    # PERFECT METRONOME PACING
+    # Metronome pacing
     frames_processed += 1
     target_time = start_time + (frames_processed * CHUNK_DURATION)
     sleep_time = target_time - time.perf_counter()
-    
+
     if sleep_time > 0:
         time.sleep(sleep_time)
-    elif sleep_time < -2.0:
-        # Only snap the clock if the container actually suspended or froze 
-        # for over 2 seconds so we don't spam a million packets at once.
+    elif sleep_time < -1.0:
         start_time = time.perf_counter()
         frames_processed = 0
