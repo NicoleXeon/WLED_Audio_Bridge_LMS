@@ -17,13 +17,16 @@ FRAME_BYTES = CHUNK_SIZE * 4
 MAX_SILENT_FRAMES = 43  # ~1 second of silence at 43.06 FPS
 
 # DSP tuning environment overrides
-FREQ_MIN = float(os.environ.get("FREQ_MIN", "100.0"))
-FREQ_MAX = float(os.environ.get("FREQ_MAX", "8000.0"))
+FREQ_MIN = float(os.environ.get("FREQ_MIN", "150.0"))
+FREQ_MAX = float(os.environ.get("FREQ_MAX", "6000.0"))
 GAIN_MULT = float(os.environ.get("GAIN_MULT", "3500.0"))
 SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.5"))
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+
+# Pre-compute Hanning window to save CPU cycles inside the loop
+HANNING_WINDOW = np.hanning(CHUNK_SIZE).astype(np.float32)
 
 # Compute 16 logarithmic frequency bands
 FREQ_EDGES = np.logspace(np.log10(FREQ_MIN), np.log10(FREQ_MAX), 17)
@@ -41,29 +44,28 @@ for i in range(16):
     bins_idx.append(idx)
 
 sample_smth = 0.0
-clock_target = time.perf_counter()
 silence_frames = 0
-
-# Canonical 44-byte WLED AudioReactive V2 struct layout
 STRUCT_FMT_V2 = "<6s2xffB3x16sd"
+
+start_time = None
+frames_processed = 0
 
 while True:
     raw_data = sys.stdin.buffer.read(FRAME_BYTES)
     if not raw_data or len(raw_data) < FRAME_BYTES:
         break
 
-    # Pacing at real-time audio speed to avoid CPU runaway
-    clock_target += CHUNK_DURATION
-    delay = clock_target - time.perf_counter()
-    if delay > 0:
-        time.sleep(delay)
-    elif delay < -0.2:
-        clock_target = time.perf_counter()
+    now = time.perf_counter()
+    
+    # Start the master hardware clock the exact millisecond the first audio byte arrives
+    if start_time is None:
+        start_time = now
 
+    # Do the DSP math
     audio = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
     left = audio[0::2]
     right = audio[1::2]
-    mono = (left + right) / (2.0 * 32768.0)
+    mono = (left + right) * (1.0 / 65536.0)
 
     raw_mag = float(np.max(np.abs(mono)) * 255.0)
     sample_smth = 0.7 * sample_smth + 0.3 * raw_mag
@@ -74,28 +76,39 @@ while True:
     else:
         silence_frames = 0
 
-    if silence_frames > MAX_SILENT_FRAMES:
-        continue
+    if silence_frames <= MAX_SILENT_FRAMES:
+        windowed = mono * HANNING_WINDOW
+        fft_vals = np.abs(np.fft.rfft(windowed)) * (2.0 / CHUNK_SIZE)
 
-    windowed = mono * np.hanning(CHUNK_SIZE)
-    fft_vals = np.abs(np.fft.rfft(windowed)) / (CHUNK_SIZE / 2)
+        fft_result = bytearray(16)
+        for i in range(16):
+            energy = float(np.mean(fft_vals[bins_idx[i]])) * GAIN_MULT
+            fft_result[i] = min(255, int(np.clip(energy, 0, 255)))
 
-    fft_result = bytearray(16)
-    for i in range(16):
-        energy = float(np.mean(fft_vals[bins_idx[i]])) * GAIN_MULT
-        fft_result[i] = min(255, int(np.clip(energy, 0, 255)))
+        payload = struct.pack(
+            STRUCT_FMT_V2,
+            b"00002\x00",
+            float(raw_mag),
+            float(sample_smth),
+            sample_peak,
+            bytes(fft_result),
+            float(raw_mag)
+        )
 
-    payload = struct.pack(
-        STRUCT_FMT_V2,
-        b"00002\x00",
-        float(raw_mag),
-        float(sample_smth),
-        sample_peak,
-        bytes(fft_result),
-        float(raw_mag)
-    )
+        try:
+            sock.sendto(payload, (UDP_IP, UDP_PORT))
+        except Exception:
+            pass
 
-    try:
-        sock.sendto(payload, (UDP_IP, UDP_PORT))
-    except Exception:
-        pass
+    # PERFECT METRONOME PACING
+    frames_processed += 1
+    target_time = start_time + (frames_processed * CHUNK_DURATION)
+    sleep_time = target_time - time.perf_counter()
+    
+    if sleep_time > 0:
+        time.sleep(sleep_time)
+    elif sleep_time < -2.0:
+        # Only snap the clock if the container actually suspended or froze 
+        # for over 2 seconds so we don't spam a million packets at once.
+        start_time = time.perf_counter()
+        frames_processed = 0
