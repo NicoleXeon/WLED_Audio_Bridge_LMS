@@ -4,6 +4,19 @@ services:
     container_name: wled-audio-bridge
     restart: unless-stopped
     network_mode: host
-    volumes:
-      - ./bridge.py:/app/bridge.py:ro
-    command: sh -c "squeezelite -s 127.0.0.1 -n WLED-Audio-Sync -m 02:00:00:11:98:88 -o - -r 44100 -d all=info | python3 bridge.py"
+    environment:
+      - LMS_IP=                     # Optional: leave empty for auto-discovery
+      - PLAYER_NAME=WLED-Audio-Sync
+      - PLAYER_MAC=02:00:00:11:98:88
+      - FREQ_MIN=40.0
+      - FREQ_MAX=12000.0
+      - GAIN_MIN=800.0
+      - GAIN_MAX=8500.0
+    command: >
+      sh -c 'squeezelite
+      $${LMS_IP:+-s $$LMS_IP}
+      -n "$${PLAYER_NAME:-WLED-Audio-Sync}"
+      -m "$${PLAYER_MAC:-02:00:00:11:98:88}"
+      -o -
+      -r 44100
+      -d all=info | python3 bridge.py'
