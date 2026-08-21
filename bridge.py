@@ -24,13 +24,14 @@ SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.5"))
 # Dynamic AGC and Frequency Tilt overrides
 GAIN_MIN = float(os.environ.get("GAIN_MIN", "800.0"))       # Floor: prevents squashing heavily mastered EDM
 GAIN_MAX = float(os.environ.get("GAIN_MAX", "8500.0"))      # Ceiling: prevents boosting background tape hiss
-TILT_EXPONENT = float(os.environ.get("TILT_EXPONENT", "0.42")) # Logarithmic treble compensation curve
-DECAY_RATE = float(os.environ.get("DECAY_RATE", "0.998"))   # ~10-second slow recovery decay per frame
+TILT_EXPONENT = float(os.environ.get("TILT_EXPONENT", "0.42")) # Treble tilt compensation
+DECAY_RATE = float(os.environ.get("DECAY_RATE", "0.995"))   # Slightly faster recovery (~5s) for better bounce
+CONTRAST_EXPONENT = float(os.environ.get("CONTRAST_EXPONENT", "2.0")) # >1.0 crushes noise floor & exaggerates beats
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
 
-# Pre-compute Hanning window to save CPU cycles inside the loop
+# Pre-compute Hanning window
 HANNING_WINDOW = np.hanning(CHUNK_SIZE).astype(np.float32)
 
 # Compute 16 logarithmic frequency bands
@@ -48,14 +49,14 @@ for i in range(16):
         idx = [closest]
     bins_idx.append(idx)
 
-# Pre-compute logarithmic treble tilt weights (1/f pink noise balance)
+# Pre-compute logarithmic treble tilt weights
 band_centers = np.sqrt(FREQ_EDGES[:-1] * FREQ_EDGES[1:])
 TILT_WEIGHTS = ((band_centers / FREQ_MIN) ** TILT_EXPONENT).astype(np.float32)
 
 # State variables
 sample_smth = 0.0
 silence_frames = 0
-running_peak = 0.05  # Initial baseline ceiling
+running_peak = 0.05
 STRUCT_FMT_V2 = "<6s2xffB3x16sd"
 
 start_time = None
@@ -69,7 +70,7 @@ while True:
     if not raw_data or len(raw_data) < FRAME_BYTES:
         break
 
-    # Gap Detector: If the pipe sat empty for >200ms, reset the clock & AGC baseline
+    # Reset metronome and baseline on gap/pause
     if read_duration > 0.2:
         start_time = time.perf_counter()
         frames_processed = 0
@@ -102,22 +103,23 @@ while True:
         for i in range(16):
             raw_energies[i] = np.mean(fft_vals[bins_idx[i]])
 
-        # Apply logarithmic pink noise compensation
+        # Apply logarithmic treble tilt
         tilted_energies = raw_energies * TILT_WEIGHTS
 
-        # Asymmetric AGC: Instant attack, slow crawl decay
+        # Track rolling peak
         current_max = float(np.max(tilted_energies))
         if current_max > running_peak:
             running_peak = current_max
         else:
             running_peak = max(0.005, running_peak * DECAY_RATE)
 
-        # Dynamic gain bounded within strict sanity limits
-        dynamic_gain = np.clip(255.0 / running_peak, GAIN_MIN, GAIN_MAX)
+        # Dynamic gain bounded by floor and ceiling
+        dynamic_gain = np.clip(1.0 / running_peak, GAIN_MIN / 255.0, GAIN_MAX / 255.0)
 
-        # Scale into 8-bit unsigned integer array
-        scaled = np.clip(tilted_energies * dynamic_gain, 0, 255).astype(np.uint8)
-        fft_result = bytes(scaled)
+        # Normalize 0.0 to 1.0, apply contrast exponent, scale to 0-255
+        normalized = np.clip(tilted_energies * dynamic_gain, 0.0, 1.0)
+        contrasted = (normalized ** CONTRAST_EXPONENT) * 255.0
+        fft_result = bytes(np.clip(contrasted, 0, 255).astype(np.uint8))
 
         payload = struct.pack(
             STRUCT_FMT_V2,

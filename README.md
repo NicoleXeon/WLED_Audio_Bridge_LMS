@@ -51,6 +51,7 @@ Instead of relying on analog or I2S microphones wired to microcontrollers which 
 | `GAIN_MIN` | `800.0` | Lower dynamic gain floor (prevents squashing compressed EDM/metal). |
 | `GAIN_MAX` | `8500.0` | Upper dynamic gain ceiling (prevents amplifying background noise). |
 | `TILT_EXPONENT`| `0.42` | Treble tilt compensation exponent (1/f pink noise curve). |
+| `CONTRAST_EXPONENT` | `2.0` | Non-linear power curve exponent. Crushes mid-level musical clutter to exaggerate transient punches and beats. |
 | `DECAY_RATE` | `0.998` | Per-frame decay multiplier for the AGC ceiling (~10s slow decay). |
 | `SILENCE_THRESHOLD` | `0.5` | Peak threshold (0–255 scale) below which the stream is gated. |
 | `UDP_IP` | `239.0.0.1` | Multicast group IP for WLED AudioReactive. |
@@ -185,6 +186,15 @@ Dynamic_Gain = clamp(255.0 / Running_Ceiling, GAIN_MIN, GAIN_MAX)
 Final_Bands = clamp(Tilted_Energies * Dynamic_Gain, 0, 255)
 
 ```
+
+### Dynamic Contrast Power Curve
+
+To prevent sustained instruments and background harmonics from keeping the visualizer bars hovering statically mid-scale, an exponential power curve is applied to normalized bands:
+
+Contrasted_Energy = (Normalized_Energy ^ CONTRAST_EXPONENT) * 255.0
+
+Setting `CONTRAST_EXPONENT` between `1.8` and `2.2` aggressively pulls low-to-mid level audio down toward zero while preserving full ceiling hits on transient peaks. This gives the LED matrix a snappy, rhythmic bounce with distinct drops between beats instead of a flat, muddy visual floor.
+
 
 ## Technical Specifications
 
