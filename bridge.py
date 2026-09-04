@@ -4,6 +4,14 @@ import time
 import socket
 import struct
 import numpy as np
+import fcntl
+
+# Lobotomize the Linux kernel pipe so it can't hoard future audio
+try:
+    F_SETPIPE_SZ = 1031
+    fcntl.fcntl(sys.stdin.fileno(), F_SETPIPE_SZ, 4096)
+except Exception:
+    pass
 
 # Network settings
 UDP_IP = os.environ.get("UDP_IP", "239.0.0.1")
@@ -16,17 +24,15 @@ CHUNK_DURATION = CHUNK_SIZE / SAMPLE_RATE
 FRAME_BYTES = CHUNK_SIZE * 4
 MAX_SILENT_FRAMES = 43  # ~1 second of silence at 43.06 FPS
 
-# DSP tuning environment overrides
-FREQ_MIN = float(os.environ.get("FREQ_MIN", "40.0"))       # Catch deep sub-bass and 50Hz kicks
-FREQ_MAX = float(os.environ.get("FREQ_MAX", "12000.0"))    # Capture crisp cymbals and high transients
-SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.5"))
-
-# Dynamic AGC and Frequency Tilt overrides
-GAIN_MIN = float(os.environ.get("GAIN_MIN", "800.0"))       # Floor: prevents squashing heavily mastered EDM
-GAIN_MAX = float(os.environ.get("GAIN_MAX", "8500.0"))      # Ceiling: prevents boosting background tape hiss
-TILT_EXPONENT = float(os.environ.get("TILT_EXPONENT", "0.42")) # Treble tilt compensation
-DECAY_RATE = float(os.environ.get("DECAY_RATE", "0.995"))   # Slightly faster recovery (~5s) for better bounce
-CONTRAST_EXPONENT = float(os.environ.get("CONTRAST_EXPONENT", "2.0")) # >1.0 crushes noise floor & exaggerates beats
+# Hardcoded DSP tuning
+FREQ_MIN = 44.0          # Aligned with physical 43.06Hz FFT bin resolution
+FREQ_MAX = 12000.0       # Capture crisp cymbals and high transients
+SILENCE_THRESHOLD = 0.5
+GAIN_MIN = 800.0         # Floor: prevents squashing heavily mastered EDM
+GAIN_MAX = 8500.0        # Ceiling: prevents boosting background tape hiss
+TILT_EXPONENT = 0.42     # Treble tilt compensation
+DECAY_RATE = 0.95        # Faster recovery (~1s) for actual snap and bounce
+CONTRAST_EXPONENT = 1.2  # >1.0 crushes noise floor & exaggerates beats
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
@@ -38,20 +44,26 @@ HANNING_WINDOW = np.hanning(CHUNK_SIZE).astype(np.float32)
 FREQ_EDGES = np.logspace(np.log10(FREQ_MIN), np.log10(FREQ_MAX), 17)
 fft_freqs = np.fft.rfftfreq(CHUNK_SIZE, 1.0 / SAMPLE_RATE)
 
-bins_idx = []
+# Pre-compute logarithmic treble tilt weights
+band_centers = np.sqrt(FREQ_EDGES[:-1] * FREQ_EDGES[1:])
+TILT_WEIGHTS = ((band_centers / FREQ_MIN) ** TILT_EXPONENT).astype(np.float32)
+
+# Build a C-optimized Matrix for dot-product binning
+# Shape: (16 bands, 513 FFT bins). 
+BIN_MATRIX = np.zeros((16, len(fft_freqs)), dtype=np.float32)
+
 for i in range(16):
     low = FREQ_EDGES[i]
     high = FREQ_EDGES[i + 1]
     idx = np.where((fft_freqs >= low) & (fft_freqs < high) & (fft_freqs > 0))[0]
+    
     if len(idx) == 0:
         non_zero_bins = np.where(fft_freqs > 0)[0]
         closest = non_zero_bins[np.argmin(np.abs(fft_freqs[non_zero_bins] - low))]
         idx = [closest]
-    bins_idx.append(idx)
-
-# Pre-compute logarithmic treble tilt weights
-band_centers = np.sqrt(FREQ_EDGES[:-1] * FREQ_EDGES[1:])
-TILT_WEIGHTS = ((band_centers / FREQ_MIN) ** TILT_EXPONENT).astype(np.float32)
+        
+    # The mean is just 1.0 / count. Multiply by the tilt weight immediately.
+    BIN_MATRIX[i, idx] = (1.0 / len(idx)) * TILT_WEIGHTS[i]
 
 # State variables
 sample_smth = 0.0
@@ -67,11 +79,14 @@ while True:
     raw_data = sys.stdin.buffer.read(FRAME_BYTES)
     read_duration = time.perf_counter() - t0
 
-    if not raw_data or len(raw_data) < FRAME_BYTES:
+    # Short-read survival patch
+    if not raw_data:
         break
+    if len(raw_data) < FRAME_BYTES:
+        continue
 
-    # Reset metronome and baseline on gap/pause
-    if read_duration > 0.2:
+    # Micro-reset baseline to permanently kill accumulated audio pipeline drift
+    if read_duration > 0.015:
         start_time = time.perf_counter()
         frames_processed = 0
         running_peak = 0.05
@@ -98,13 +113,8 @@ while True:
         windowed = mono * HANNING_WINDOW
         fft_vals = np.abs(np.fft.rfft(windowed)) * (2.0 / CHUNK_SIZE)
 
-        # Vectorized band extraction
-        raw_energies = np.empty(16, dtype=np.float32)
-        for i in range(16):
-            raw_energies[i] = np.mean(fft_vals[bins_idx[i]])
-
-        # Apply logarithmic treble tilt
-        tilted_energies = raw_energies * TILT_WEIGHTS
+        # C-optimized single matrix multiplication replaces the 16-step for loop and tilt math
+        tilted_energies = BIN_MATRIX @ fft_vals
 
         # Track rolling peak
         current_max = float(np.max(tilted_energies))
