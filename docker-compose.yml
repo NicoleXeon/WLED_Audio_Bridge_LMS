@@ -13,7 +13,6 @@ services:
       $${LMS_IP:+-s $$LMS_IP}
       -n "$${PLAYER_NAME:-WLED-Audio-Sync}"
       -m "$${PLAYER_MAC:-02:00:00:11:98:88}"
-      -b 2000:20
       -o -
       -r 44100
       -d all=info | python3 bridge.py'
