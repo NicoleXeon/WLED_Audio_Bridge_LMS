@@ -2,7 +2,7 @@
 
 A high-performance digital audio bridge that connects **Lyrion Music Server (LMS)** directly to **WLED** instances over UDP multicast for synchronized, sound-reactive LED lighting with zero acoustic latency.
 
-Instead of relying on analog or I2S microphones wired to microcontrollers—which suffer from room reflections, background noise, and hardware gain clipping—this bridge taps directly into the master digital stream, executes real-time 16-band Fast Fourier Transform (FFT) DSP on the host CPU, and broadcasts native WLED AudioReactive V2 sync packets across your local network.
+Instead of relying on analog or I2S microphones wired to microcontrollers, which suffer from room reflections, background noise, and hardware gain clipping. This bridge taps directly into the master digital stream, executes real-time 16-band Fast Fourier Transform (FFT) DSP on the host CPU, and broadcasts native WLED AudioReactive V2 sync packets across your local network.
 
 ---
 
