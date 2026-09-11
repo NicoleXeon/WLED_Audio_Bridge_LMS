@@ -66,22 +66,9 @@ Adjust these in your `docker-compose.yml` or shell environment:
 
 ## Diagnostic Tuner (`bridge_tuner.py`)
 
-A desktop GUI monitor built with Pygame to inspect the live DSP output of the bridge across the network in real time.
+A simple desktop GUI monitor built with Pygame to inspect the live DSP output of the bridge across the network in real time, to further tune the bridge parameters according to user's need.
 
-```text
-+-----------------------------------------------------------------------+
-| MAG: 0128.9 | AGC: 0128.5 | PEAK: 0 | PPS: 43 | TOTAL PKTS: 5418      |
-|                                                                       |
-|                                                     __                |
-|                                           __       |  |               |
-|                                 __       |  |  __  |  |               |
-|             __        __  __   |  |  __  |  | |  | |  |  __           |
-|            |  |  __  |  | |  | |  | |  | |  | |  | |  | |  |           |
-|  __   __   |  | |  | |  | |  | |  | |  | |  | |  | |  | |  |           |
-|  00   01   02   03   04   05   06   07   08   09   10   11 ...  15    |
-|  47   66   92  129  181  253  354  496  694  971 1.4k 1.9k ... 6.8k   |
-+-----------------------------------------------------------------------+
-```
+![WLED DSP Tuner](tuner.png)
 
 ### Features
 
