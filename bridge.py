@@ -95,8 +95,6 @@ STRUCT_FMT_V2 = "<6s2xffB3x16sd"
 start_time = None
 frames_processed = 0
 
-fft_result = bytes([int(BASELINE_OFFSET)] * 16)
-
 while True:
     t0 = time.perf_counter()
     raw_data = audio_queue.get()
@@ -147,25 +145,32 @@ while True:
         
         contrasted = (normalized ** CONTRAST_EXPONENT) * (255.0 - BASELINE_OFFSET)
         final_bins = contrasted + BASELINE_OFFSET
+
+        # On the final frame before shutting up, send 0s so LEDs blank cleanly
+        if silence_frames == MAX_SILENT_FRAMES:
+            fft_result = bytes(16)
+        else:
+            fft_result = bytes(np.clip(final_bins, 0, 255).astype(np.uint8))
+
+        payload = struct.pack(
+            STRUCT_FMT_V2,
+            b"00002\x00",
+            float(raw_mag),
+            float(sample_smth),
+            sample_peak,
+            fft_result,
+            float(raw_mag)
+        )
+
+        try:
+            sock.sendto(payload, (UDP_IP, UDP_PORT))
+        except Exception:
+            pass
     else:
-        final_bins = np.full(16, BASELINE_OFFSET, dtype=np.float32)
-
-    fft_result = bytes(np.clip(final_bins, 0, 255).astype(np.uint8))
-
-    payload = struct.pack(
-        STRUCT_FMT_V2,
-        b"00002\x00",
-        float(raw_mag),
-        float(sample_smth),
-        sample_peak,
-        fft_result,
-        float(raw_mag)
-    )
-
-    try:
-        sock.sendto(payload, (UDP_IP, UDP_PORT))
-    except Exception:
-        pass
+        # Full idle: stop sending UDP packets and avoid integer overflow
+        silence_frames = MAX_SILENT_FRAMES + 1
+        running_peak = 0.05
+        sample_smth = 0.0
 
     frames_processed += 1
     target_time = start_time + (frames_processed * CHUNK_DURATION)
