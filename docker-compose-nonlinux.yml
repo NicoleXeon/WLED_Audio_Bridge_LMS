@@ -1,16 +1,17 @@
 services:
-  wled-audio-bridge:
-    build: .
-    container_name: wled-audio-bridge
+  wled-audio-bridge-fallback:
+    build: 
+      context: .
+      dockerfile: Dockerfile.fallback
+    container_name: wled-audio-bridge-fallback
     restart: unless-stopped
     network_mode: host
-    devices:
-      - /dev/snd:/dev/snd
+    working_dir: /app
     volumes:
-      - ./bridge.py:/app/bridge.py
+      - ./bridge-fallback.py:/app/bridge.py
     environment:
       - LMS_IP=
       - PLAYER_NAME=WLED-Audio-Sync
       - PLAYER_MAC=02:00:00:11:98:88
     command: >
-      bash -c 'squeezelite $${LMS_IP:+-s $$LMS_IP} -n "$${PLAYER_NAME:-WLED-Audio-Sync}" -m "$${PLAYER_MAC:-02:00:00:11:98:88}" -o hw:Loopback,0,0 -a 80:4:16:0 -d all=info & arecord -D hw:Loopback,1,0 -f S16_LE -c 2 -r 44100 -t raw | python3 bridge.py'
+      sh -c 'squeezelite $${LMS_IP:+-s $$LMS_IP} -n "$${PLAYER_NAME:-WLED-Audio-Sync}" -m "$${PLAYER_MAC:-02:00:00:11:98:88}" -o - -d all=info | python3 bridge.py'
