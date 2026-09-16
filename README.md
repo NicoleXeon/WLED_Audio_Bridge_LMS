@@ -4,6 +4,9 @@ A high-performance digital audio bridge that connects **Lyrion Music Server (LMS
 
 Instead of relying on analog or I2S microphones wired to microcontrollers, which suffer from room reflections, background noise, and hardware gain clipping. This bridge taps directly into the master digital stream, executes real-time 16-band Fast Fourier Transform (FFT) DSP on the host CPU, and broadcasts native WLED AudioReactive V2 sync packets across your local network.
 
+[![WLED LMS Audio Bridge Demo](https://img.youtube.com/vi/Z9ulP79JX2k/maxresdefault.jpg)](https://www.youtube.com/watch?v=Z9ulP79JX2k)
+> 📺 **Demo Video:** [Watch the real-time audio-reactive demo on YouTube](https://www.youtube.com/watch?v=Z9ulP79JX2k)
+
 ![LMS Bridge](LMS.png)
 
 > **⚠️ OS ARCHITECTURE WARNING**
@@ -17,17 +20,17 @@ Instead of relying on analog or I2S microphones wired to microcontrollers, which
    
 2. **2:1 Decimation & Sub-Bass Resolution:** To solve the standard FFT bin resolution bottleneck at 44.1 kHz without breaking LMS clock sync, the bridge ingests 1024-sample chunks and decimates the stream 2:1 down to 22.05 kHz (512 samples). This tightens frequency bin resolution to **43.06 Hz per bin**, allowing the DSP to isolate 40 Hz sub-bass rumbles from 80 Hz kick drums.
 
-3. **Logarithmic Frequency Mapping (40 Hz – 6 kHz):** Samples are windowed with a pre-computed Hanning curve and partitioned into 16 logarithmically spaced frequency bins. The upper boundary is capped at 6 kHz to focus display resolution on the musical core (sub-bass, bass, mids, presence) instead of wasting precious LED bands on inaudible ultrasonic noise or cymbal splash.
+3. **Logarithmic Frequency Mapping (100 Hz – 6 kHz):** Samples are windowed with a pre-computed Hanning curve and partitioned into 16 logarithmically spaced frequency bins. The upper boundary is capped at 6 kHz to focus display resolution on the musical core (sub-bass, bass, mids, presence) instead of wasting precious LED bands on inaudible ultrasonic noise or cymbal splash.
 
-4. **Treble Tilt (1/f Compensation):** Acoustic energy naturally rolls off at higher octaves. The bridge applies a gentle logarithmic power curve (`TILT_EXPONENT = 0.25`) across the 16 bands so high-frequency percussive elements register with punch without overpowering the kick drum.
+4. **Treble Tilt (1/f Compensation):** Acoustic energy naturally rolls off at higher octaves. The bridge applies a gentle logarithmic power curve (`TILT_EXPONENT = 0.55`) across the 16 bands so high-frequency percussive elements register with punch without overpowering the kick drum.
 
 5. **Asymmetric Auto Gain Control (AGC):**
    * **Instant Attack:** Instantly raises the tracking ceiling on heavy drops and drum transients to eliminate 8-bit clipping (255 whiteouts).
    * **Decay Ballistics (`DECAY_RATE = 0.88`):** Decays the envelope ceiling smoothly across frames, holding peaks long enough to preserve punch without pumping.
-   * **Hard Clamping:** Clamps gain strictly between `GAIN_MIN` (200.0) and `GAIN_MAX` (3500.0) to prevent background noise amplification during quiet passages.
+   * **Hard Clamping:** Clamps gain strictly between `GAIN_MIN` (500.0) and `GAIN_MAX` (1500.0) to prevent background noise amplification during quiet passages.
 
 6. **Contrast Shaping & Baseline Offset:**
-   * **Contrast Curve (`CONTRAST_EXPONENT = 1.5`):** Applies an exponential power curve to suppress background harmonics and emphasize transients.
+   * **Contrast Curve (`CONTRAST_EXPONENT = 0.8`):** Applies an exponential power curve to suppress background harmonics and emphasize transients.
    * **Baseline Offset (`BASELINE_OFFSET = 8.0`):** Adds a subtle resting floor to the 8-bit payload, preventing LED pixels from harsh on/off strobe transitions during playback.
 
 7. **Metronome Hardware Pacing & Gap Detection:** On Linux, ALSA acts as a hardware master clock to maintain a strict ~43 FPS output rate matching WLED's native frame loop. An integrated gap detector resets the metronome if an empty pipe occurs during track changes or pauses, eliminating start-of-track lag.
@@ -57,13 +60,13 @@ Adjust these in your `docker-compose.yml` or shell environment:
 | `PLAYER_MAC` | `02:00:00:11:98:88` | Virtual MAC address assigned to Squeezelite. |
 | `UDP_IP` | `239.0.0.1` | Target UDP IP. Defaults to standard WLED multicast. Set to a unicast IP for targeted diagnostic monitoring. |
 | `UDP_PORT` | `11988` | Target UDP port for WLED AudioReactive sync. |
-| `FREQ_MIN` | `40.0` | Lower frequency bound (Hz) for Band 00 (Sub-bass / Kick). |
+| `FREQ_MIN` | `100.0` | Lower frequency bound (Hz) for Band 00 (Sub-bass / Kick). |
 | `FREQ_MAX` | `6000.0` | Upper frequency bound (Hz) for Band 15 (Presence / Treble). |
-| `GAIN_MIN` | `200.0` | Minimum AGC gain multiplier (prevents blowout on heavily compressed audio). |
-| `GAIN_MAX` | `3500.0` | Maximum AGC gain ceiling (prevents runaway gain on quiet tracks). |
-| `TILT_EXPONENT` | `0.25` | Treble compensation exponent across the logarithmic center frequencies. |
+| `GAIN_MIN` | `500.0` | Minimum AGC gain multiplier (prevents blowout on heavily compressed audio). |
+| `GAIN_MAX` | `1500.0` | Maximum AGC gain ceiling (prevents runaway gain on quiet tracks). |
+| `TILT_EXPONENT` | `0.55` | Treble compensation exponent across the logarithmic center frequencies. |
 | `DECAY_RATE` | `0.88` | AGC peak envelope decay multiplier per frame. |
-| `CONTRAST_EXPONENT` | `1.5` | Exponential curve factor to separate beat transients from mid-level background music. |
+| `CONTRAST_EXPONENT` | `0.8` | Exponential curve factor to separate beat transients from mid-level background music. |
 | `BASELINE_OFFSET` | `8.0` | Minimum resting baseline (0–255 scale) to keep LEDs smoothly lit between beats. |
 | `SILENCE_THRESHOLD` | `0.5` | Raw magnitude threshold below which frames are flagged silent. |
 
@@ -167,7 +170,7 @@ Weight = (Center_Frequency / FREQ_MIN) ^ TILT_EXPONENT
 Tilted_Energy = Raw_Band_Energy * Weight
 ```
 
-Where `TILT_EXPONENT` is set to `0.25`. This ensures high-frequency transients produce equivalent visual height to low-end bass fundamentals without skewing the AGC ceiling.
+Where `TILT_EXPONENT` is set to `0.55`. This ensures high-frequency transients produce equivalent visual height to low-end bass fundamentals without skewing the AGC ceiling.
 
 ### Asymmetric Peak Decay (AGC)
 
@@ -194,7 +197,7 @@ Contrasted = (Normalized ** CONTRAST_EXPONENT) * (255.0 - BASELINE_OFFSET)
 Final_Bands = Contrasted + BASELINE_OFFSET
 ```
 
-Setting `CONTRAST_EXPONENT = 1.5` aggressively drops low-to-mid level audio toward the floor while preserving full ceiling hits on transient peaks. Adding `BASELINE_OFFSET = 8.0` keeps the LED matrix lightly engaged between beats instead of strobing to black.
+Setting `CONTRAST_EXPONENT = 0.8` shapes the dynamic range to separate beat transients cleanly. Adding `BASELINE_OFFSET = 8.0` keeps the LED matrix lightly engaged between beats instead of strobing to black.
 
 ---
 

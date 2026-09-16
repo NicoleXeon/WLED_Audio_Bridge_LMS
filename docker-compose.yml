@@ -2,7 +2,7 @@ services:
   wled-audio-bridge:
     build: .
     container_name: wled-audio-bridge
-    restart: unless-stopped
+    restart: no
     network_mode: host
     devices:
       - /dev/snd:/dev/snd
@@ -10,6 +10,7 @@ services:
       - ./bridge.py:/app/bridge.py
     environment:
       - LMS_IP=
+      # - UDP_IP=192.168.195.218
       - PLAYER_NAME=WLED-Audio-Sync
       - PLAYER_MAC=02:00:00:11:98:88
     command: >
