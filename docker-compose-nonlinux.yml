@@ -2,12 +2,13 @@ services:
   wled-audio-bridge-fallback:
     build: 
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.fallback
     container_name: wled-audio-bridge-fallback
     restart: unless-stopped
     network_mode: host
     working_dir: /app
     volumes:
+      # Fix the mount to point to the actual script on your host
       - ./bridge-nonlinux.py:/app/bridge.py
     environment:
       - LMS_IP=
