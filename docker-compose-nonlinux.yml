@@ -2,13 +2,13 @@ services:
   wled-audio-bridge-fallback:
     build: 
       context: .
-      dockerfile: Dockerfile.fallback
+      dockerfile: Dockerfile
     container_name: wled-audio-bridge-fallback
     restart: unless-stopped
     network_mode: host
     working_dir: /app
     volumes:
-      - ./bridge-fallback.py:/app/bridge.py
+      - ./bridge-nonlinux.py:/app/bridge.py
     environment:
       - LMS_IP=
       - PLAYER_NAME=WLED-Audio-Sync
