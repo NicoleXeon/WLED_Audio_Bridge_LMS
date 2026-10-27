@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+
+# Dropped alsa-utils since the fallback relies purely on stdout
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    squeezelite \
+    python3 \
+    python3-numpy \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+# Copy the non-linux script and rename it so the command in your compose file works out of the box
+COPY bridge-nonlinux.py bridge.py
