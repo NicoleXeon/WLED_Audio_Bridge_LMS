@@ -19,8 +19,9 @@ MAX_SILENT_FRAMES = 22
 FREQ_MIN = 100.0
 FREQ_MAX = 6000.0
 SILENCE_THRESHOLD = 0.5
+INT16_SILENCE_LIMIT = int(SILENCE_THRESHOLD * 32768.0 / 255.0)
 GAIN_MIN = 500.0
-GAIN_MAX = 1500.0 
+GAIN_MAX = 1500.0
 TILT_EXPONENT = 0.55
 DECAY_RATE = 0.88
 CONTRAST_EXPONENT = 0.8
@@ -47,17 +48,6 @@ for i in range(16):
         idx = [closest]
     BIN_MATRIX[i, idx] = (1.0 / len(idx)) * TILT_WEIGHTS[i]
 
-def read_exact_chunk(fd, size):
-    buf = bytearray(size)
-    view = memoryview(buf)
-    pos = 0
-    while pos < size:
-        chunk = fd.readinto(view[pos:])
-        if not chunk:
-            return None
-        pos += chunk
-    return bytes(buf)
-
 sample_smth = 0.0
 silence_frames = MAX_SILENT_FRAMES + 1
 running_peak = 0.05
@@ -65,21 +55,29 @@ STRUCT_FMT_V2 = "<6s2xffB3x16sd"
 
 print("[DSP] ALSA kernel metronome locked. Awaiting arecord pipe...", flush=True)
 
+stdin_buf = sys.stdin.buffer
 start_time = None
 frames_processed = 0
 
 while True:
-    raw_data = read_exact_chunk(sys.stdin.buffer, FRAME_BYTES)
-    
-    if not raw_data:
+    raw_data = stdin_buf.read(FRAME_BYTES)
+
+    if len(raw_data) < FRAME_BYTES:
         print("[DSP] Pipe closed.", flush=True)
         break
+
+    samples_i16 = np.frombuffer(raw_data, dtype=np.int16)
+
+    # Zero-allocation silence bypass while idle; go straight back to kernel sleep
+    if silence_frames > MAX_SILENT_FRAMES:
+        if samples_i16.min() > -INT16_SILENCE_LIMIT and samples_i16.max() < INT16_SILENCE_LIMIT:
+            continue
 
     if start_time is None:
         start_time = time.perf_counter()
         frames_processed = 0
 
-    audio = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
+    audio = samples_i16.astype(np.float32)
     mono = (audio[0::2] + audio[1::2]) * (1.0 / 65536.0)
     mono_dsp = mono[::2]
 
@@ -126,17 +124,15 @@ while True:
         silence_frames = MAX_SILENT_FRAMES + 1
         running_peak = 0.05
         sample_smth = 0.0
+        start_time = None
+        continue
 
     frames_processed += 1
     target_time = start_time + (frames_processed * CHUNK_DURATION)
     sleep_time = target_time - time.perf_counter()
 
-    if sleep_time > 0.002:
-        time.sleep(sleep_time - 0.001)
-
-    while time.perf_counter() < target_time:
-        pass
-
-    if sleep_time < -1.0:
+    if sleep_time > 0.001:
+        time.sleep(sleep_time)
+    elif sleep_time < -1.0:
         start_time = time.perf_counter()
         frames_processed = 0
